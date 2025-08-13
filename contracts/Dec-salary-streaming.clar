@@ -13,6 +13,8 @@
 (define-constant ERR-STREAM-PAUSED (err u411))
 (define-constant ERR-NOTHING-TO-CLAIM (err u412))
 (define-constant ERR-ALREADY-CLAIMED (err u413))
+(define-constant ERR-BONUS-NOT-FOUND (err u414))
+(define-constant ERR-BONUS-ALREADY-CLAIMED (err u415))
 
 (define-constant BLOCKS-PER-HOUR u144)
 (define-constant BLOCKS-PER-DAY u3456)
@@ -20,6 +22,7 @@
 (define-data-var next-stream-id uint u1)
 (define-data-var total-streams uint u0)
 (define-data-var total-volume uint u0)
+(define-data-var next-bonus-id uint u1)
 
 (define-map streams
   uint
@@ -60,6 +63,24 @@
     total-received: uint,
     active-streams: uint
   }
+)
+
+(define-map bonuses
+  uint
+  {
+    employer: principal,
+    employee: principal,
+    amount: uint,
+    description: (string-ascii 100),
+    created-block: uint,
+    expiry-block: uint,
+    is-claimed: bool
+  }
+)
+
+(define-map employee-bonuses
+  principal
+  (list 50 uint)
 )
 
 (define-private (get-user-stats (user principal))
@@ -370,5 +391,81 @@
       })
     )
     ERR-STREAM-NOT-FOUND
+  )
+)
+
+(define-public (issue-bonus (employee principal) (amount uint) (description (string-ascii 100)) (expiry-blocks uint))
+  (let 
+    (
+      (bonus-id (var-get next-bonus-id))
+      (current-block stacks-block-height)
+      (expiry-block (+ current-block expiry-blocks))
+    )
+    (asserts! (> amount u0) ERR-INVALID-PARAMETERS)
+    (asserts! (> expiry-blocks u0) ERR-INVALID-PARAMETERS)
+    (asserts! (not (is-eq tx-sender employee)) ERR-INVALID-PARAMETERS)
+    
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    
+    (map-set bonuses bonus-id
+      {
+        employer: tx-sender,
+        employee: employee,
+        amount: amount,
+        description: description,
+        created-block: current-block,
+        expiry-block: expiry-block,
+        is-claimed: false
+      }
+    )
+    
+    (let ((current-bonuses (default-to (list) (map-get? employee-bonuses employee))))
+      (map-set employee-bonuses employee 
+        (unwrap-panic (as-max-len? (append current-bonuses bonus-id) u50))
+      )
+    )
+    
+    (var-set next-bonus-id (+ bonus-id u1))
+    (ok bonus-id)
+  )
+)
+
+(define-public (claim-bonus (bonus-id uint))
+  (let ((bonus-data (unwrap! (map-get? bonuses bonus-id) ERR-BONUS-NOT-FOUND)))
+    (asserts! (is-eq tx-sender (get employee bonus-data)) ERR-NOT-AUTHORIZED)
+    (asserts! (not (get is-claimed bonus-data)) ERR-BONUS-ALREADY-CLAIMED)
+    (asserts! (< stacks-block-height (get expiry-block bonus-data)) ERR-STREAM-ENDED)
+    
+    (try! (as-contract (stx-transfer? (get amount bonus-data) tx-sender (get employee bonus-data))))
+    
+    (map-set bonuses bonus-id (merge bonus-data {is-claimed: true}))
+    (update-user-stats (get employee bonus-data) u0 (get amount bonus-data) 0)
+    
+    (ok (get amount bonus-data))
+  )
+)
+
+(define-read-only (get-bonus (bonus-id uint))
+  (map-get? bonuses bonus-id)
+)
+
+(define-read-only (get-employee-bonuses (employee principal))
+  (default-to (list) (map-get? employee-bonuses employee))
+)
+
+(define-read-only (get-unclaimed-bonuses (employee principal))
+  (let ((bonus-list (get-employee-bonuses employee)))
+    (filter is-bonus-unclaimed bonus-list)
+  )
+)
+
+(define-private (is-bonus-unclaimed (bonus-id uint))
+  (match (map-get? bonuses bonus-id)
+    bonus-data 
+    (and 
+      (not (get is-claimed bonus-data))
+      (< stacks-block-height (get expiry-block bonus-data))
+    )
+    false
   )
 )
