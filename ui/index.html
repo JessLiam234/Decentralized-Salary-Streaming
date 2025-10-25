@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Decentralized Salary Streaming</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>💰 Decentralized Salary Streaming</h1>
+            <p>Stream sBTC payments to your employees</p>
+        </header>
+
+        <div class="tab-container">
+            <div class="tabs">
+                <button class="tab-button active" data-tab="employer">👔 Employer</button>
+                <button class="tab-button" data-tab="employee">👨‍💼 Employee</button>
+                <button class="tab-button" data-tab="analytics">📊 Analytics</button>
+            </div>
+
+            <div class="tab-content active" id="employer">
+                <div class="section">
+                    <h2>Create Salary Stream</h2>
+                    <div class="form-group">
+                        <label>Employee Address</label>
+                        <input type="text" id="employee-address" placeholder="SP1ABCD...">
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Stream Type</label>
+                            <select id="stream-type">
+                                <option value="hourly">⏰ Hourly</option>
+                                <option value="daily">📅 Daily</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Rate (µSTX)</label>
+                            <input type="number" id="rate" placeholder="1000000">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Duration</label>
+                        <input type="number" id="duration" placeholder="30">
+                        <small id="duration-label">hours</small>
+                    </div>
+                    <button class="btn btn-primary" onclick="createStream()">🚀 Create Stream</button>
+                </div>
+
+                <div class="section">
+                    <h2>My Streams</h2>
+                    <div id="employer-streams" class="streams-container">
+                        <div class="stream-card">
+                            <div class="stream-header">
+                                <span class="stream-id">#001</span>
+                                <span class="stream-status active">Active</span>
+                            </div>
+                            <div class="stream-details">
+                                <div class="detail">
+                                    <span class="label">Employee:</span>
+                                    <span class="value">SP1ABC...DEF</span>
+                                </div>
+                                <div class="detail">
+                                    <span class="label">Rate:</span>
+                                    <span class="value">1000 µSTX/hr</span>
+                                </div>
+                                <div class="detail">
+                                    <span class="label">Progress:</span>
+                                    <div class="progress-bar">
+                                        <div class="progress-fill" style="width: 45%"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="stream-actions">
+                                <button class="btn btn-sm btn-warning">⏸️ Pause</button>
+                                <button class="btn btn-sm btn-danger">❌ Cancel</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="employee">
+                <div class="section">
+                    <h2>My Incoming Streams</h2>
+                    <div id="employee-streams" class="streams-container">
+                        <div class="stream-card">
+                            <div class="stream-header">
+                                <span class="stream-id">#001</span>
+                                <span class="stream-status active">Active</span>
+                            </div>
+                            <div class="stream-details">
+                                <div class="detail">
+                                    <span class="label">From:</span>
+                                    <span class="value">SP1XYZ...ABC</span>
+                                </div>
+                                <div class="detail">
+                                    <span class="label">Rate:</span>
+                                    <span class="value">1000 µSTX/hr</span>
+                                </div>
+                                <div class="detail">
+                                    <span class="label">Claimable:</span>
+                                    <span class="value claimable">5000 µSTX</span>
+                                </div>
+                            </div>
+                            <div class="stream-actions">
+                                <button class="btn btn-primary">💰 Claim Payment</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="analytics">
+                <div class="section">
+                    <h2>Platform Statistics</h2>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-value">156</div>
+                            <div class="stat-label">Total Streams</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value">2.4M</div>
+                            <div class="stat-label">µSTX Streamed</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value">89</div>
+                            <div class="stat-label">Active Users</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value">98.5%</div>
+                            <div class="stat-label">Uptime</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="section">
+                    <h2>Recent Activity</h2>
+                    <div class="activity-list">
+                        <div class="activity-item">
+                            <div class="activity-icon">🎯</div>
+                            <div class="activity-content">
+                                <div class="activity-title">Stream Created</div>
+                                <div class="activity-subtitle">SP1ABC...DEF → SP1XYZ...ABC</div>
+                            </div>
+                            <div class="activity-time">2 mins ago</div>
+                        </div>
+                        <div class="activity-item">
+                            <div class="activity-icon">💰</div>
+                            <div class="activity-content">
+                                <div class="activity-title">Payment Claimed</div>
+                                <div class="activity-subtitle">5000 µSTX claimed</div>
+                            </div>
+                            <div class="activity-time">5 mins ago</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
