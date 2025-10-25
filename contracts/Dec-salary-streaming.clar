@@ -19,6 +19,11 @@
 (define-constant ERR-INVALID-TOKEN (err u417))
 (define-constant ERR-TOKEN-TRANSFER-FAILED (err u418))
 (define-constant ERR-EXCHANGE-RATE-NOT-SET (err u419))
+(define-constant ERR-MILESTONE-NOT-FOUND (err u420))
+(define-constant ERR-MILESTONE-ALREADY-COMPLETED (err u421))
+(define-constant ERR-MILESTONE-NOT-APPROVED (err u422))
+(define-constant ERR-INVALID-MILESTONE (err u423))
+(define-constant ERR-ALL-MILESTONES-COMPLETE (err u424))
 
 (define-constant BLOCKS-PER-HOUR u144)
 (define-constant BLOCKS-PER-DAY u3456)
@@ -28,6 +33,7 @@
 (define-data-var total-volume uint u0)
 (define-data-var next-bonus-id uint u1)
 (define-data-var next-token-id uint u1)
+(define-data-var next-milestone-stream-id uint u1)
 
 (define-map streams
   uint
@@ -115,6 +121,38 @@
     original-amount: uint,
     stx-equivalent: uint
   }
+)
+
+(define-map milestone-streams
+  { milestone-stream-id: uint }
+  {
+    employer: principal,
+    employee: principal,
+    total-amount: uint,
+    released-amount: uint,
+    current-milestone: uint,
+    total-milestones: uint,
+    is-active: bool,
+    created-block: uint
+  }
+)
+
+(define-map milestones
+  { milestone-stream-id: uint, milestone-index: uint }
+  {
+    description: (string-ascii 200),
+    amount: uint,
+    is-completed: bool,
+    is-approved: bool,
+    submitted-block: (optional uint),
+    approved-block: (optional uint),
+    evidence-hash: (optional (string-ascii 64))
+  }
+)
+
+(define-map employee-milestone-streams
+  principal
+  (list 50 uint)
 )
 
 (define-private (get-user-stats (user principal))
@@ -805,4 +843,251 @@
 
 (define-read-only (get-next-token-id)
   (var-get next-token-id)
+)
+
+(define-public (create-milestone-stream
+  (employee principal)
+  (total-amount uint)
+  (num-milestones uint))
+  (let
+    (
+      (milestone-stream-id (var-get next-milestone-stream-id))
+    )
+    (asserts! (> num-milestones u0) ERR-INVALID-PARAMETERS)
+    (asserts! (<= num-milestones u10) ERR-INVALID-PARAMETERS)
+    (asserts! (> total-amount u0) ERR-INVALID-PARAMETERS)
+    (asserts! (not (is-eq tx-sender employee)) ERR-INVALID-PARAMETERS)
+    
+    (try! (stx-transfer? total-amount tx-sender (as-contract tx-sender)))
+    
+    (map-set milestone-streams
+      { milestone-stream-id: milestone-stream-id }
+      {
+        employer: tx-sender,
+        employee: employee,
+        total-amount: total-amount,
+        released-amount: u0,
+        current-milestone: u0,
+        total-milestones: num-milestones,
+        is-active: true,
+        created-block: stacks-block-height
+      }
+    )
+    
+    (let ((current-streams (default-to (list) (map-get? employee-milestone-streams employee))))
+      (map-set employee-milestone-streams employee
+        (unwrap-panic (as-max-len? (append current-streams milestone-stream-id) u50))
+      )
+    )
+    
+    (update-user-stats tx-sender total-amount u0 0)
+    (var-set next-milestone-stream-id (+ milestone-stream-id u1))
+    (ok milestone-stream-id)
+  )
+)
+
+(define-public (define-milestone
+  (milestone-stream-id uint)
+  (milestone-index uint)
+  (description (string-ascii 200))
+  (amount uint))
+  (let
+    (
+      (stream-data (unwrap! (map-get? milestone-streams { milestone-stream-id: milestone-stream-id }) ERR-STREAM-NOT-FOUND))
+    )
+    (asserts! (is-eq tx-sender (get employer stream-data)) ERR-NOT-AUTHORIZED)
+    (asserts! (< milestone-index (get total-milestones stream-data)) ERR-INVALID-MILESTONE)
+    (asserts! (is-none (map-get? milestones { milestone-stream-id: milestone-stream-id, milestone-index: milestone-index })) ERR-MILESTONE-ALREADY-COMPLETED)
+    (asserts! (> amount u0) ERR-INVALID-PARAMETERS)
+    
+    (map-set milestones
+      { milestone-stream-id: milestone-stream-id, milestone-index: milestone-index }
+      {
+        description: description,
+        amount: amount,
+        is-completed: false,
+        is-approved: false,
+        submitted-block: none,
+        approved-block: none,
+        evidence-hash: none
+      }
+    )
+    (ok true)
+  )
+)
+
+(define-public (submit-milestone-completion
+  (milestone-stream-id uint)
+  (milestone-index uint)
+  (evidence-hash (string-ascii 64)))
+  (let
+    (
+      (stream-data (unwrap! (map-get? milestone-streams { milestone-stream-id: milestone-stream-id }) ERR-STREAM-NOT-FOUND))
+      (milestone-data (unwrap! (map-get? milestones { milestone-stream-id: milestone-stream-id, milestone-index: milestone-index }) ERR-MILESTONE-NOT-FOUND))
+    )
+    (asserts! (is-eq tx-sender (get employee stream-data)) ERR-NOT-AUTHORIZED)
+    (asserts! (get is-active stream-data) ERR-STREAM-ENDED)
+    (asserts! (is-eq milestone-index (get current-milestone stream-data)) ERR-INVALID-MILESTONE)
+    (asserts! (not (get is-completed milestone-data)) ERR-MILESTONE-ALREADY-COMPLETED)
+    
+    (map-set milestones
+      { milestone-stream-id: milestone-stream-id, milestone-index: milestone-index }
+      (merge milestone-data {
+        is-completed: true,
+        submitted-block: (some stacks-block-height),
+        evidence-hash: (some evidence-hash)
+      })
+    )
+    (ok true)
+  )
+)
+
+(define-public (approve-milestone
+  (milestone-stream-id uint)
+  (milestone-index uint))
+  (let
+    (
+      (stream-data (unwrap! (map-get? milestone-streams { milestone-stream-id: milestone-stream-id }) ERR-STREAM-NOT-FOUND))
+      (milestone-data (unwrap! (map-get? milestones { milestone-stream-id: milestone-stream-id, milestone-index: milestone-index }) ERR-MILESTONE-NOT-FOUND))
+      (milestone-amount (get amount milestone-data))
+    )
+    (asserts! (is-eq tx-sender (get employer stream-data)) ERR-NOT-AUTHORIZED)
+    (asserts! (get is-active stream-data) ERR-STREAM-ENDED)
+    (asserts! (get is-completed milestone-data) ERR-MILESTONE-NOT-APPROVED)
+    (asserts! (not (get is-approved milestone-data)) ERR-MILESTONE-ALREADY-COMPLETED)
+    (asserts! (is-eq milestone-index (get current-milestone stream-data)) ERR-INVALID-MILESTONE)
+    
+    (try! (as-contract (stx-transfer? milestone-amount tx-sender (get employee stream-data))))
+    
+    (map-set milestones
+      { milestone-stream-id: milestone-stream-id, milestone-index: milestone-index }
+      (merge milestone-data {
+        is-approved: true,
+        approved-block: (some stacks-block-height)
+      })
+    )
+    
+    (let
+      (
+        (new-released (+ (get released-amount stream-data) milestone-amount))
+        (next-milestone (+ milestone-index u1))
+        (is-final-milestone (is-eq next-milestone (get total-milestones stream-data)))
+      )
+      (map-set milestone-streams
+        { milestone-stream-id: milestone-stream-id }
+        (merge stream-data {
+          released-amount: new-released,
+          current-milestone: next-milestone,
+          is-active: (not is-final-milestone)
+        })
+      )
+      
+      (update-user-stats (get employee stream-data) u0 milestone-amount 0)
+      (ok milestone-amount)
+    )
+  )
+)
+
+(define-public (reject-milestone
+  (milestone-stream-id uint)
+  (milestone-index uint))
+  (let
+    (
+      (stream-data (unwrap! (map-get? milestone-streams { milestone-stream-id: milestone-stream-id }) ERR-STREAM-NOT-FOUND))
+      (milestone-data (unwrap! (map-get? milestones { milestone-stream-id: milestone-stream-id, milestone-index: milestone-index }) ERR-MILESTONE-NOT-FOUND))
+    )
+    (asserts! (is-eq tx-sender (get employer stream-data)) ERR-NOT-AUTHORIZED)
+    (asserts! (get is-active stream-data) ERR-STREAM-ENDED)
+    (asserts! (get is-completed milestone-data) ERR-MILESTONE-NOT-APPROVED)
+    (asserts! (not (get is-approved milestone-data)) ERR-MILESTONE-ALREADY-COMPLETED)
+    
+    (map-set milestones
+      { milestone-stream-id: milestone-stream-id, milestone-index: milestone-index }
+      (merge milestone-data {
+        is-completed: false,
+        submitted-block: none,
+        evidence-hash: none
+      })
+    )
+    (ok true)
+  )
+)
+
+(define-public (cancel-milestone-stream (milestone-stream-id uint))
+  (let
+    (
+      (stream-data (unwrap! (map-get? milestone-streams { milestone-stream-id: milestone-stream-id }) ERR-STREAM-NOT-FOUND))
+      (remaining-amount (- (get total-amount stream-data) (get released-amount stream-data)))
+    )
+    (asserts! (is-eq tx-sender (get employer stream-data)) ERR-NOT-AUTHORIZED)
+    (asserts! (get is-active stream-data) ERR-STREAM-ENDED)
+    
+    (if (> remaining-amount u0)
+      (try! (as-contract (stx-transfer? remaining-amount tx-sender (get employer stream-data))))
+      true
+    )
+    
+    (map-set milestone-streams
+      { milestone-stream-id: milestone-stream-id }
+      (merge stream-data { is-active: false })
+    )
+    (ok remaining-amount)
+  )
+)
+
+(define-read-only (get-milestone-stream (milestone-stream-id uint))
+  (map-get? milestone-streams { milestone-stream-id: milestone-stream-id })
+)
+
+(define-read-only (get-milestone
+  (milestone-stream-id uint)
+  (milestone-index uint))
+  (map-get? milestones { milestone-stream-id: milestone-stream-id, milestone-index: milestone-index })
+)
+
+(define-read-only (get-employee-milestone-streams (employee principal))
+  (default-to (list) (map-get? employee-milestone-streams employee))
+)
+
+(define-read-only (get-milestone-stream-progress (milestone-stream-id uint))
+  (match (map-get? milestone-streams { milestone-stream-id: milestone-stream-id })
+    stream-data
+    (let
+      (
+        (completion-percentage (if (> (get total-amount stream-data) u0)
+          (/ (* (get released-amount stream-data) u100) (get total-amount stream-data))
+          u0))
+      )
+      (some {
+        current-milestone: (get current-milestone stream-data),
+        total-milestones: (get total-milestones stream-data),
+        released-amount: (get released-amount stream-data),
+        total-amount: (get total-amount stream-data),
+        completion-percentage: completion-percentage,
+        is-active: (get is-active stream-data)
+      })
+    )
+    none
+  )
+)
+
+(define-read-only (get-pending-milestone
+  (milestone-stream-id uint))
+  (match (map-get? milestone-streams { milestone-stream-id: milestone-stream-id })
+    stream-data
+    (let
+      (
+        (current-idx (get current-milestone stream-data))
+      )
+      (if (< current-idx (get total-milestones stream-data))
+        (map-get? milestones { milestone-stream-id: milestone-stream-id, milestone-index: current-idx })
+        none
+      )
+    )
+    none
+  )
+)
+
+(define-read-only (get-next-milestone-stream-id)
+  (var-get next-milestone-stream-id)
 )
