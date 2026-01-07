@@ -24,6 +24,10 @@
 (define-constant ERR-MILESTONE-NOT-APPROVED (err u422))
 (define-constant ERR-INVALID-MILESTONE (err u423))
 (define-constant ERR-ALL-MILESTONES-COMPLETE (err u424))
+(define-constant ERR-DELEGATE-NOT-AUTHORIZED (err u425))
+(define-constant ERR-DELEGATE-ALREADY-EXISTS (err u426))
+(define-constant ERR-DELEGATE-NOT-FOUND (err u427))
+(define-constant ERR-DELEGATION-EXPIRED (err u428))
 
 (define-constant BLOCKS-PER-HOUR u144)
 (define-constant BLOCKS-PER-DAY u3456)
@@ -153,6 +157,22 @@
 (define-map employee-milestone-streams
   principal
   (list 50 uint)
+)
+
+(define-map withdrawal-delegates
+  { employee: principal, delegate: principal }
+  {
+    is-active: bool,
+    expiry-block: uint,
+    created-block: uint,
+    max-amount-per-claim: uint,
+    total-withdrawn: uint
+  }
+)
+
+(define-map employee-delegate-list
+  principal
+  (list 20 principal)
 )
 
 (define-private (get-user-stats (user principal))
@@ -1090,4 +1110,113 @@
 
 (define-read-only (get-next-milestone-stream-id)
   (var-get next-milestone-stream-id)
+)
+
+(define-public (authorize-delegate
+  (delegate principal)
+  (expiry-blocks uint)
+  (max-amount-per-claim uint))
+  (let
+    (
+      (expiry-block (+ stacks-block-height expiry-blocks))
+    )
+    (asserts! (not (is-eq tx-sender delegate)) ERR-INVALID-PARAMETERS)
+    (asserts! (> expiry-blocks u0) ERR-INVALID-PARAMETERS)
+    (asserts! (> max-amount-per-claim u0) ERR-INVALID-PARAMETERS)
+    (asserts! (is-none (map-get? withdrawal-delegates { employee: tx-sender, delegate: delegate })) ERR-DELEGATE-ALREADY-EXISTS)
+    
+    (map-set withdrawal-delegates
+      { employee: tx-sender, delegate: delegate }
+      {
+        is-active: true,
+        expiry-block: expiry-block,
+        created-block: stacks-block-height,
+        max-amount-per-claim: max-amount-per-claim,
+        total-withdrawn: u0
+      }
+    )
+    
+    (let ((current-delegates (default-to (list) (map-get? employee-delegate-list tx-sender))))
+      (map-set employee-delegate-list tx-sender
+        (unwrap-panic (as-max-len? (append current-delegates delegate) u20))
+      )
+    )
+    (ok true)
+  )
+)
+
+(define-public (revoke-delegate (delegate principal))
+  (let
+    (
+      (delegation (unwrap! (map-get? withdrawal-delegates { employee: tx-sender, delegate: delegate }) ERR-DELEGATE-NOT-FOUND))
+    )
+    (map-set withdrawal-delegates
+      { employee: tx-sender, delegate: delegate }
+      (merge delegation { is-active: false })
+    )
+    (ok true)
+  )
+)
+
+(define-public (claim-as-delegate (stream-id uint) (employee principal))
+  (let
+    (
+      (stream (unwrap! (map-get? streams stream-id) ERR-STREAM-NOT-FOUND))
+      (delegation (unwrap! (map-get? withdrawal-delegates { employee: employee, delegate: tx-sender }) ERR-DELEGATE-NOT-AUTHORIZED))
+      (current-block stacks-block-height)
+      (end-block-capped (min-uint (get end-block stream) current-block))
+      (blocks-since-claim (if (> end-block-capped (get last-claimed-block stream))
+                              (- end-block-capped (get last-claimed-block stream))
+                              u0))
+      (claimable-amount (calculate-streamable-amount (get rate-per-block stream) blocks-since-claim))
+      (balance (default-to u0 (map-get? stream-balances stream-id)))
+      (actual-claim (min-uint claimable-amount balance))
+      (final-claim (min-uint actual-claim (get max-amount-per-claim delegation)))
+    )
+    (asserts! (is-eq employee (get employee stream)) ERR-NOT-AUTHORIZED)
+    (asserts! (get is-active stream) ERR-STREAM-ENDED)
+    (asserts! (not (get is-paused stream)) ERR-STREAM-PAUSED)
+    (asserts! (get is-active delegation) ERR-DELEGATE-NOT-AUTHORIZED)
+    (asserts! (<= current-block (get expiry-block delegation)) ERR-DELEGATION-EXPIRED)
+    (asserts! (> final-claim u0) ERR-NOTHING-TO-CLAIM)
+    
+    (try! (as-contract (stx-transfer? final-claim tx-sender employee)))
+    
+    (map-set streams stream-id
+      (merge stream {
+        last-claimed-block: end-block-capped,
+        claimed-amount: (+ (get claimed-amount stream) final-claim)
+      })
+    )
+    (map-set stream-balances stream-id (- balance final-claim))
+    
+    (map-set withdrawal-delegates
+      { employee: employee, delegate: tx-sender }
+      (merge delegation {
+        total-withdrawn: (+ (get total-withdrawn delegation) final-claim)
+      })
+    )
+    
+    (update-user-stats employee u0 final-claim 0)
+    (ok final-claim)
+  )
+)
+
+(define-read-only (get-delegate-info (employee principal) (delegate principal))
+  (map-get? withdrawal-delegates { employee: employee, delegate: delegate })
+)
+
+(define-read-only (get-employee-delegates (employee principal))
+  (default-to (list) (map-get? employee-delegate-list employee))
+)
+
+(define-read-only (is-valid-delegate (employee principal) (delegate principal))
+  (match (map-get? withdrawal-delegates { employee: employee, delegate: delegate })
+    delegation
+    (and 
+      (get is-active delegation)
+      (<= stacks-block-height (get expiry-block delegation))
+    )
+    false
+  )
 )
